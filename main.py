@@ -1,7 +1,7 @@
 import asyncio
 from apify import Actor
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import stealth
 
 async def main():
     async with Actor:
@@ -26,19 +26,18 @@ async def main():
             )
             page = await context.new_page()
 
-            # --- ПРИМЕНЯЕМ МАСКИРОВКУ ---
-            await stealth_async(page)
+            # --- ПРИМЕНЯЕМ МАСКИРОВКУ (Исправлено) ---
+            await stealth(page)
             # ----------------------------
 
             print(f"Захожу на 999.md как невидимка: {url}")
             
             try:
-                # Заходим на страницу. Используем 'commit', чтобы не ждать вечно
+                # Заходим на страницу
                 await page.goto(url, wait_until="commit", timeout=60000)
-                # Даем сайту 10 секунд просто "пожить", чтобы подгрузить данные
                 await asyncio.sleep(10) 
 
-                # Делаем скриншот (посмотрим, пропустила ли нас защита)
+                # Делаем скриншот для проверки
                 screenshot = await page.screenshot(full_page=True)
                 await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
 
@@ -70,7 +69,6 @@ async def main():
 
             except Exception as e:
                 print(f"Произошла ошибка: {e}")
-                # Если всё упало, всё равно сохраняем скриншот ошибки
                 scr = await page.screenshot()
                 await Actor.set_value('ERROR_SCREENSHOT', scr, content_type='image/png')
 
