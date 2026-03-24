@@ -19,55 +19,53 @@ async def main():
                 launch_args['proxy'] = {'server': proxy_url}
 
             browser = await p.chromium.launch(**launch_args)
-            
-            # Настраиваем контекст как у реального человека
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={'width': 1920, 'height': 1080},
-                device_scale_factor=1,
-                is_mobile=False,
-                has_touch=False,
-                locale="ru-RU",
-                timezone_id="Europe/Chisinau"
+                viewport={'width': 1280, 'height': 800}
             )
             
             page = await context.new_page()
 
-            # --- РУЧНАЯ МАСКИРОВКА (Вместо stealth библиотеки) ---
+            # Маскировка
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en-US', 'en']});
             """)
-            # ----------------------------------------------------
 
-            print(f"Захожу на страницу через прокси: {url}")
+            print(f"Захожу на страницу: {url}")
             
             try:
-                # Заходим и ждем
-                await page.goto(url, wait_until="networkidle", timeout=60000)
+                # Заходим и ждем только самого важного
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(5) 
 
-                # Делаем скриншот (самая важная проверка!)
-                screenshot = await page.screenshot(full_page=True)
-                await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
+                # Пытаемся сделать скриншот, но не умираем, если он не выйдет
+                try:
+                    # animations="disabled" — чтобы не ждать шрифты и анимации
+                    screenshot = await page.screenshot(timeout=10000, animations="disabled")
+                    await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
+                except:
+                    print("Скриншот не удался, но продолжаем собирать данные...")
 
                 data = {"url": url}
 
-                # Собираем данные
+                # Собираем данные (упрощенные селекторы)
                 title_el = await page.query_selector('h1')
                 price_el = await page.query_selector('.adPage__content__price-feature [itemprop="price"]')
                 
                 data["title"] = await title_el.inner_text() if title_el else "N/A"
-                data["price"] = await price_el.get_attribute("content") if price_el else "N/A"
+                if price_el:
+                    data["price"] = await price_el.get_attribute("content")
+                else:
+                    # Пробуем достать текст цены напрямую
+                    p_text = await page.locator('.adPage__content__price-feature').first.inner_text()
+                    data["price"] = p_text.strip().split('\\n')[0] if p_text else "N/A"
 
                 # Нажимаем на телефон
                 phone_btn = await page.query_selector('.adPage__content__phone-button, .js-phone-number')
                 if phone_btn:
                     await phone_btn.scroll_into_view_if_needed()
-                    await asyncio.sleep(1)
                     await phone_btn.click()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(2)
                     data["phone"] = await phone_btn.inner_text()
                 else:
                     data["phone"] = "Кнопка не найдена"
@@ -75,9 +73,7 @@ async def main():
                 await Actor.push_data(data)
 
             except Exception as e:
-                print(f"Ошибка: {e}")
-                err_scr = await page.screenshot()
-                await Actor.set_value('ERROR_SCREENSHOT', err_scr, content_type='image/png')
+                print(f"Ошибка парсинга: {e}")
 
             await browser.close()
 
