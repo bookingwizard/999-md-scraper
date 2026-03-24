@@ -2,7 +2,7 @@
     "actorSpecification": 1,
     "name": "999-md-parser",
     "title": "999.md Auto Analyzer",
-    "description": "Парсер для сбора данных с 999.md: цена, описание и телефон.",
+    "description": "Парсер для сбора данных с 999.md с поддержкой прокси.",
     "version": "0.1",
     "dockerfile": "./Dockerfile",
     "input": {
@@ -13,7 +13,13 @@
                 "type": "string",
                 "description": "Вставь сюда полную ссылку на машину с 999.md",
                 "editor": "textfield",
-                "prefill": "https://999.md/ru/88888888"
+                "prefill": "https://999.md/ru/103806834"
+            },
+            "proxyConfiguration": {
+                "title": "Настройка прокси (ОБЯЗАТЕЛЬНО для 999.md)",
+                "type": "object",
+                "description": "Выберите 'Automatic' или 'Residential' для обхода блокировок.",
+                "editor": "proxy"
             }
         },
         "required": ["url"]
