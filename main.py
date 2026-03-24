@@ -8,9 +8,9 @@ async def main():
         url = actor_input.get('url')
 
         if not url:
-            print("URL не указан!")
-            return
+            await Actor.fail('URL не указан!')
 
+        # Просим молдавский прокси
         proxy_configuration = await Actor.create_proxy_configuration(
             groups=['RESIDENTIAL'],
             country_code='MD'
@@ -18,61 +18,75 @@ async def main():
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, proxy={'server': proxy_url} if proxy_url else None)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            # Запускаем браузер с расширенными аргументами
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy={'server': proxy_url} if proxy_url else None,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--use-fake-ui-for-media-stream',
+                    '--window-size=1920,1080'
+                ]
             )
+            
+            # Создаем контекст с полной маскировкой
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={'width': 1920, 'height': 1080},
+                extra_http_headers={
+                    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Referer': 'https://999.md/ru/'
+                }
+            )
+            
             page = await context.new_page()
+
+            # Глубокая маскировка параметров браузера
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
+            """)
 
             print(f"Захожу на {url}...")
             
             try:
-                await page.goto(url, wait_until="networkidle", timeout=60000)
-                await asyncio.sleep(10)
+                # Пытаемся зайти и ждем чуть дольше
+                await page.goto(url, wait_until="load", timeout=90000)
+                await asyncio.sleep(20) # Даем максимум времени на прогрузку скриптов
 
-                # --- ОТЛАДКА: ЧТО ВИДИТ БОТ? ---
+                # 1. ПРОВЕРКА: ЧТО ЖЕ ТАМ НА САМОМ ДЕЛЕ?
+                html_preview = await page.content()
+                print(f"Первые 200 символов страницы: {html_preview[:200]}")
                 page_title = await page.title()
-                print(f"Заголовок страницы в браузере: {page_title}")
-                # -------------------------------
+                print(f"Заголовок: {page_title}")
 
-                # Новые, более широкие селекторы
-                title = "N/A"
-                title_el = await page.query_selector('h1, .adPage__header h1')
-                if title_el:
-                    title = await title_el.inner_text()
+                # 2. СОБИРАЕМ ДАННЫЕ
+                data = {"url": url, "browser_title": page_title}
 
-                price = "N/A"
-                # Пробуем найти по itemprop или по классу цены
-                price_el = await page.query_selector('[itemprop="price"], .adPage__content__price-feature')
-                if price_el:
-                    price = await price_el.inner_text()
+                # Заголовок объявления
+                title_el = await page.query_selector('h1')
+                data["title"] = await title_el.inner_text() if title_el else "N/A"
 
+                # Цена
+                price_el = await page.query_selector('.adPage__content__price-feature')
+                data["price"] = await price_el.inner_text() if price_el else "N/A"
+
+                # Телефон
                 phone = "Не найден"
-                # Кнопка телефона часто имеет специфический класс
-                phone_btn = await page.query_selector('button.adPage__content__phone-button, .js-phone-number')
+                phone_btn = await page.query_selector('.adPage__content__phone-button, .js-phone-number')
                 if phone_btn:
                     await phone_btn.click()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)
                     phone = await phone_btn.inner_text()
+                data["phone"] = phone
 
-                result = {
-                    "url": url,
-                    "browser_title": page_title,
-                    "title": title.strip(),
-                    "price": price.strip().replace('\n', ' '),
-                    "phone": phone.strip()
-                }
-
-                await Actor.push_data(result)
-                print(f"Результат записан: {result}")
-
-                # Скриншот без ожидания шрифтов
-                await page.screenshot(path="result.png", timeout=5000)
-                with open("result.png", "rb") as f:
-                    await Actor.set_value('FINAL_CHECK', f.read(), content_type='image/png')
+                await Actor.push_data(data)
+                print(f"Готово: {data}")
 
             except Exception as e:
-                print(f"Ошибка: {e}")
+                print(f"Критическая ошибка: {e}")
             
             finally:
                 await browser.close()
