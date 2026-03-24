@@ -10,7 +10,11 @@ async def main():
         if not url:
             await Actor.fail('URL не указан!')
 
-        proxy_configuration = await Actor.create_proxy_configuration()
+        # Просим прокси именно Молдовы (MD)
+        proxy_configuration = await Actor.create_proxy_configuration(
+            groups=['RESIDENTIAL'],
+            country_code='MD'
+        )
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
@@ -20,62 +24,63 @@ async def main():
 
             browser = await p.chromium.launch(**launch_args)
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 viewport={'width': 1280, 'height': 800}
             )
             
             page = await context.new_page()
 
-            # Маскировка
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            """)
+            # Скрываем автоматизацию
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-            print(f"Захожу на страницу: {url}")
+            print(f"Пытаюсь прорваться на {url} через молдавский прокси...")
             
             try:
-                # Заходим и ждем только самого важного
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(5) 
-
-                # Пытаемся сделать скриншот, но не умираем, если он не выйдет
-                try:
-                    # animations="disabled" — чтобы не ждать шрифты и анимации
-                    screenshot = await page.screenshot(timeout=10000, animations="disabled")
-                    await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
-                except:
-                    print("Скриншот не удался, но продолжаем собирать данные...")
-
-                data = {"url": url}
-
-                # Собираем данные (упрощенные селекторы)
-                title_el = await page.query_selector('h1')
-                price_el = await page.query_selector('.adPage__content__price-feature [itemprop="price"]')
+                # Ждем только начала передачи данных ('commit')
+                response = await page.goto(url, wait_until="commit", timeout=60000)
                 
-                data["title"] = await title_el.inner_text() if title_el else "N/A"
+                if response.status == 403:
+                    print("Доступ заблокирован (403). Пробуем подождать...")
+                
+                await asyncio.sleep(15) # Даем сайту "подумать"
+
+                # Проверяем, есть ли заголовок (значит мы внутри)
+                title_el = await page.query_selector('h1')
+                if not title_el:
+                    # Если не зашли, делаем скриншот ошибки и выходим с ошибкой
+                    scr = await page.screenshot()
+                    await Actor.set_value('FAIL_SCREENSHOT', scr, content_type='image/png')
+                    await Actor.fail("Не удалось прогрузить страницу (застряли на защите)")
+
+                # Если мы здесь, значит зашли!
+                data = {
+                    "url": url,
+                    "title": await title_el.inner_text(),
+                    "price": "Ищем...",
+                    "phone": "Ищем..."
+                }
+
+                # Парсим цену
+                price_el = await page.query_selector('.adPage__content__price-feature [itemprop="price"]')
                 if price_el:
                     data["price"] = await price_el.get_attribute("content")
-                else:
-                    # Пробуем достать текст цены напрямую
-                    p_text = await page.locator('.adPage__content__price-feature').first.inner_text()
-                    data["price"] = p_text.strip().split('\\n')[0] if p_text else "N/A"
 
-                # Нажимаем на телефон
+                # Парсим телефон
                 phone_btn = await page.query_selector('.adPage__content__phone-button, .js-phone-number')
                 if phone_btn:
-                    await phone_btn.scroll_into_view_if_needed()
                     await phone_btn.click()
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     data["phone"] = await phone_btn.inner_text()
-                else:
-                    data["phone"] = "Кнопка не найдена"
 
                 await Actor.push_data(data)
+                print("Данные успешно собраны!")
 
             except Exception as e:
-                print(f"Ошибка парсинга: {e}")
+                # Если упали, теперь Apify покажет честный "Failed"
+                await Actor.fail(f"Ошибка: {str(e)}")
 
-            await browser.close()
+            finally:
+                await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
