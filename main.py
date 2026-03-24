@@ -4,53 +4,62 @@ from playwright.async_api import async_playwright
 
 async def main():
     async with Actor:
-        # 1. Получаем входные данные (ссылку на объявление)
+        # 1. Получаем входные данные
         actor_input = await Actor.get_input() or {}
         url = actor_input.get('url')
 
         if not url:
-            await Actor.fail('Вы не указали URL для парсинга!')
+            await Actor.fail('URL не указан!')
 
         async with async_playwright() as p:
-            # Запускаем браузер (используем Firefox или Chromium)
-            browser = await p.chromium.launch(headless=True)
-            # Важно: имитируем реального пользователя
+            # Используем Firefox — он часто лучше обходит защиты
+            browser = await p.firefox.launch(headless=True)
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+                viewport={'width': 1280, 'height': 720}
             )
             page = await context.new_page()
 
-            print(f"Открываю страницу: {url}")
-            await page.goto(url, wait_until="networkidle")
+            print(f"Захожу на страницу: {url}")
+            
+            # Ждем загрузки
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(5) # Даем время на подгрузку скриптов
 
-            # 2. Извлекаем данные (селекторы актуальны для 999.md)
-            # Если 999 обновит дизайн, нужно будет просто поменять эти строки
+            # Делаем скриншот для проверки (в Key-Value Store)
+            screenshot = await page.screenshot()
+            await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
+
             try:
+                # Извлекаем основные данные
+                title_el = await page.query_selector('h1')
+                price_el = await page.query_selector('.adPage__content__price-feature [itemprop="price"]')
+                desc_el = await page.query_selector('.adPage__content__description')
+
                 data = {
                     "url": url,
-                    "title": await page.inner_text('h1') if await page.query_selector('h1') else "N/A",
-                    "price": await page.inner_text('.adPage__content__price-feature') if await page.query_selector('.adPage__content__price-feature') else "N/A",
-                    "description": await page.inner_text('.adPage__content__description') if await page.query_selector('.adPage__content__description') else "N/A",
-                    "region": await page.inner_text('.adPage__content__region') if await page.query_selector('.adPage__content__region') else "N/A",
+                    "title": await title_el.inner_text() if title_el else "N/A",
+                    "price": await price_el.get_attribute("content") if price_el else "N/A",
+                    "description": await desc_el.inner_text() if desc_el else "N/A",
                 }
 
-                # 3. Пытаемся достать телефон (он скрыт кнопкой)
-                phone_button = await page.query_selector('.adPage__content__phone .js-phone-number')
-                if phone_button:
-                    await phone_button.click()
-                    await asyncio.sleep(1) # Ждем секунду, пока подгрузится номер
-                    data["phone"] = await phone_button.inner_text()
+                # Кликаем на телефон
+                phone_btn = await page.query_selector('.adPage__content__phone-button, .js-phone-number')
+                if phone_btn:
+                    await phone_btn.scroll_into_view_if_needed()
+                    await phone_btn.click()
+                    await asyncio.sleep(2)
+                    data["phone"] = await phone_btn.inner_text()
                 else:
-                    data["phone"] = "Скрыт или не найден"
+                    data["phone"] = "Кнопка не найдена"
 
             except Exception as e:
-                print(f"Ошибка при парсинге: {e}")
+                print(f"Ошибка парсинга: {e}")
                 data = {"error": str(e), "url": url}
 
-            # 4. Отправляем результат в хранилище Apify
+            # Сохраняем результат
             await Actor.push_data(data)
             await browser.close()
 
-# Запуск
 if __name__ == "__main__":
     asyncio.run(main())
