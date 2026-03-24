@@ -1,0 +1,21 @@
+{
+    "actorSpecification": 1,
+    "name": "999-md-parser",
+    "title": "999.md Auto Analyzer",
+    "description": "Парсер для сбора данных с 999.md: цена, описание и телефон.",
+    "version": "0.1",
+    "dockerfile": "./Dockerfile",
+    "input": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "title": "Ссылка на объявление",
+                "type": "string",
+                "description": "Вставь сюда полную ссылку на машину с 999.md",
+                "editor": "textfield",
+                "prefill": "https://999.md/ru/88888888"
+            }
+        },
+        "required": ["url"]
+    }
+}
