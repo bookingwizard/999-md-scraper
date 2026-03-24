@@ -1,6 +1,7 @@
 import asyncio
 from apify import Actor
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 async def main():
     async with Actor:
@@ -10,67 +11,69 @@ async def main():
         if not url:
             await Actor.fail('URL не указан!')
 
-        # 1. Создаем конфигурацию прокси
+        # Подключаем прокси
         proxy_configuration = await Actor.create_proxy_configuration()
-        # 2. Генерируем URL прокси (это исправляет твою ошибку!)
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
-            # 3. Передаем прокси в правильном формате для Playwright
             launch_args = {'headless': True}
             if proxy_url:
                 launch_args['proxy'] = {'server': proxy_url}
 
             browser = await p.chromium.launch(**launch_args)
-            
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={'width': 1920, 'height': 1080}
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
 
-            print(f"Захожу на страницу через прокси: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # --- ПРИМЕНЯЕМ МАСКИРОВКУ ---
+            await stealth_async(page)
+            # ----------------------------
+
+            print(f"Захожу на 999.md как невидимка: {url}")
             
-            # Имитируем активность человека
-            await asyncio.sleep(3)
-            for _ in range(2):
-                await page.mouse.wheel(0, 500)
-                await asyncio.sleep(1)
-
-            # Делаем скриншот для проверки
-            screenshot = await page.screenshot(full_page=True)
-            await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
-
-            data = {"url": url}
-
             try:
-                # Парсим данные (новые селекторы)
+                # Заходим на страницу. Используем 'commit', чтобы не ждать вечно
+                await page.goto(url, wait_until="commit", timeout=60000)
+                # Даем сайту 10 секунд просто "пожить", чтобы подгрузить данные
+                await asyncio.sleep(10) 
+
+                # Делаем скриншот (посмотрим, пропустила ли нас защита)
+                screenshot = await page.screenshot(full_page=True)
+                await Actor.set_value('DEBUG_SCREENSHOT', screenshot, content_type='image/png')
+
+                # Собираем данные
                 title_el = await page.query_selector('h1')
                 price_el = await page.query_selector('.adPage__content__price-feature [itemprop="price"]')
-                
-                data["title"] = await title_el.inner_text() if title_el else "N/A"
-                data["price"] = await price_el.get_attribute("content") if price_el else "N/A"
-                
                 desc_el = await page.query_selector('.adPage__content__description')
-                data["description"] = await desc_el.inner_text() if desc_el else "N/A"
 
-                # Нажимаем кнопку телефона
+                data = {
+                    "url": url,
+                    "title": await title_el.inner_text() if title_el else "N/A",
+                    "price": await price_el.get_attribute("content") if price_el else "N/A",
+                    "description": await desc_el.inner_text() if desc_el else "N/A"
+                }
+
+                # Прокрутка и нажатие на телефон
+                await page.mouse.wheel(0, 800)
+                await asyncio.sleep(2)
+
                 phone_btn = await page.query_selector('.adPage__content__phone-button, .js-phone-number')
                 if phone_btn:
-                    await phone_btn.scroll_into_view_if_needed()
-                    await asyncio.sleep(1)
                     await phone_btn.click()
-                    await asyncio.sleep(3) # Ждем прогрузки цифр
+                    await asyncio.sleep(3)
                     data["phone"] = await phone_btn.inner_text()
                 else:
                     data["phone"] = "Кнопка не найдена"
 
-            except Exception as e:
-                print(f"Ошибка при парсинге данных: {e}")
-                data["error"] = str(e)
+                await Actor.push_data(data)
 
-            await Actor.push_data(data)
+            except Exception as e:
+                print(f"Произошла ошибка: {e}")
+                # Если всё упало, всё равно сохраняем скриншот ошибки
+                scr = await page.screenshot()
+                await Actor.set_value('ERROR_SCREENSHOT', scr, content_type='image/png')
+
             await browser.close()
 
 if __name__ == "__main__":
