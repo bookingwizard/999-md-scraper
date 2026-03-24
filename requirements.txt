@@ -1,5 +1,2 @@
 apify
 playwright
-apify
-playwright
-playwright-stealth
