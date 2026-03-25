@@ -10,6 +10,7 @@ async def main():
         if not url:
             await Actor.fail('URL не указан!')
 
+        # Просим молдавский прокси (MD)
         proxy_configuration = await Actor.create_proxy_configuration(
             groups=['RESIDENTIAL'],
             country_code='MD'
@@ -17,53 +18,66 @@ async def main():
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
-            # Пробуем Firefox — он часто пролетает там, где Chrome тормозят
-            browser = await p.firefox.launch(headless=True, proxy={'server': proxy_url} if proxy_url else None)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
+            # Возвращаемся на Chromium — он лучше дружит с прокси Apify
+            browser = await p.chromium.launch(
+                headless=True, 
+                proxy={'server': proxy_url} if proxy_url else None
             )
             
-            # ОТКЛЮЧАЕМ КАРТИНКИ И СТИЛИ (для скорости и обхода защиты)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            
             page = await context.new_page()
+
+            # Скрываем автоматизацию
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+            # Отключаем лишнее для скорости
             await page.route("**/*.{png,jpg,jpeg,css,woff,woff2,svg,gif}", lambda route: route.abort())
 
-            print(f"Захожу на {url} через Firefox (MD Proxy)...")
+            print(f"Захожу на {url}...")
             
             try:
-                # Ждем только самого начала передачи данных
-                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-                await asyncio.sleep(10) # Просто ждем появления текста
-
-                # Собираем то, что есть
-                title = await page.title()
-                content = await page.content()
+                # Пытаемся зайти
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
-                print(f"Заголовок: {title}")
-                print(f"Размер кода: {len(content)} символов")
+                # Даем время скриптам
+                await asyncio.sleep(10)
 
-                # Пробуем вытянуть цену по очень простому признаку
+                # Собираем данные
+                title = await page.title()
+                
+                # Пытаемся найти цену
                 price = "N/A"
-                price_elements = await page.query_selector_all(".adPage__content__price-feature, [itemprop='price']")
-                if price_elements:
-                    price = await price_elements[0].inner_text()
+                price_el = await page.query_selector('.adPage__content__price-feature')
+                if price_el:
+                    price = await price_el.inner_text()
 
-                data = {
+                # Если цена N/A, попробуем другой селектор
+                if price == "N/A":
+                    price_el = await page.query_selector('[itemprop="price"]')
+                    if price_el:
+                        price = await price_el.get_attribute("content")
+
+                result = {
                     "url": url,
                     "title": title,
                     "price": price.strip() if price else "N/A",
-                    "phone": "Требует клика (пока пропустим для теста захода)"
                 }
 
-                if len(content) > 500:
-                    await Actor.push_data(data)
-                    print("Есть контакт! Данные в базе.")
+                # Если мы хоть что-то нашли (заголовок не пустой)
+                if title:
+                    await Actor.push_data(result)
+                    print(f"Победа! Данные собраны: {result}")
                 else:
-                    await Actor.fail("Сайт отдал пустую страницу. Защита не пройдена.")
+                    await Actor.fail("Сайт открылся, но данных нет (пустая страница)")
 
             except Exception as e:
-                print(f"Ошибка: {e}")
-                # Если упали, сохраняем то, что успели увидеть в лог
-                await Actor.fail(f"Не удалось прорваться: {str(e)}")
+                # Исправленный вызов ошибки
+                error_msg = f"Ошибка: {str(e)}"
+                print(error_msg)
+                await Actor.fail(error_msg)
             
             finally:
                 await browser.close()
