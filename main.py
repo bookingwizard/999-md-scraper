@@ -5,19 +5,14 @@ from playwright.async_api import async_playwright
 async def main():
     async with Actor:
         actor_input = await Actor.get_input() or {}
-        original_url = actor_input.get('url')
+        url = actor_input.get('url')
 
-        if not original_url:
-            print("URL не указан!")
+        if not url:
+            await Actor.exit(status_message="URL не указан!")
             return
 
-        # ПЛАН НИНДЗЯ: Переходим на мобильную версию сайта
-        url = original_url.replace("999.md", "m.999.md")
-
-        proxy_configuration = await Actor.create_proxy_configuration(
-            groups=['RESIDENTIAL'],
-            country_code='MD'
-        )
+        # Используем автоматический выбор лучшего прокси
+        proxy_configuration = await Actor.create_proxy_configuration()
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
@@ -26,58 +21,45 @@ async def main():
                 proxy={'server': proxy_url} if proxy_url else None
             )
             
-            # Настраиваемся как iPhone — мобильные версии сайтов им доверяют больше
+            # ПРИТВОРЯЕМСЯ GOOGLEBOT
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-                viewport={'width': 390, 'height': 844}
+                user_agent="Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+                viewport={'width': 1920, 'height': 1080}
             )
             
             page = await context.new_page()
-            
-            # Скрываем автоматизацию
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-            print(f"Захожу через мобильный вход: {url}")
+            print(f"Попытка прорыва 0.2.0 (Googlebot mode) на {url}...")
             
             try:
-                # Пытаемся зайти
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                # Ждем только самого начала ответа
+                await page.goto(url, wait_until="commit", timeout=120000)
                 
-                # Ждем именно появления любого текста на странице
-                await asyncio.sleep(10)
+                # Даем сайту 15 секунд "продышаться"
+                await asyncio.sleep(15)
 
-                # Собираем данные по мобильным селекторам
                 title = await page.title()
-                print(f"Что увидел мобильный браузер: {title}")
+                print(f"Заголовок: {title}")
 
-                # Ищем цену (на мобильной версии селекторы могут отличаться)
                 price = "N/A"
-                price_selectors = [
-                    '.item__price-value', 
-                    '.adPage__content__price-feature',
-                    '[itemprop="price"]',
-                    '.price'
-                ]
-                
-                for selector in price_selectors:
-                    el = await page.query_selector(selector)
-                    if el:
-                        price = await el.inner_text()
-                        break
+                price_el = await page.query_selector('.adPage__content__price-feature, [itemprop="price"]')
+                if price_el:
+                    price = await price_el.inner_text()
 
                 result = {
                     "url": url,
                     "title": title.strip() if title else "Пусто",
                     "price": price.strip() if price else "N/A",
-                    "status": "Успех" if title and title != "Пусто" else "Заблокировано"
+                    "method": "Googlebot"
                 }
 
-                # Пушим данные только если заголовок не пустой
                 await Actor.push_data(result)
-                print(f"Результат: {result}")
+                print(f"Результат записан: {result}")
 
             except Exception as e:
-                print(f"Не удалось: {e}")
+                error_msg = f"Ошибка прорыва: {str(e)[:100]}"
+                print(error_msg)
+                await Actor.exit(exit_code=1, status_message=error_msg)
             
             finally:
                 await browser.close()
