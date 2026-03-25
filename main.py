@@ -8,9 +8,11 @@ async def main():
         url = actor_input.get('url')
 
         if not url:
-            await Actor.fail('URL не указан!')
+            # Исправленный вызов выхода
+            await Actor.exit(status_message="URL не указан!")
+            return
 
-        # Просим молдавский прокси (MD)
+        # Используем молдавский прокси
         proxy_configuration = await Actor.create_proxy_configuration(
             groups=['RESIDENTIAL'],
             country_code='MD'
@@ -18,66 +20,54 @@ async def main():
         proxy_url = await proxy_configuration.new_url() if proxy_configuration else None
 
         async with async_playwright() as p:
-            # Возвращаемся на Chromium — он лучше дружит с прокси Apify
+            # Chromium остается самым мощным инструментом
             browser = await p.chromium.launch(
-                headless=True, 
+                headless=True,
                 proxy={'server': proxy_url} if proxy_url else None
             )
             
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             )
             
             page = await context.new_page()
 
-            # Скрываем автоматизацию
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            # Отключаем лишнее для скорости
+            # Убираем все картинки и стили, чтобы прорваться сквозь защиту
             await page.route("**/*.{png,jpg,jpeg,css,woff,woff2,svg,gif}", lambda route: route.abort())
 
-            print(f"Захожу на {url}...")
+            print(f"Захожу на {url} (Таймаут 120 сек)...")
             
             try:
-                # Пытаемся зайти
-                response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                # Ждем только 'commit' (самое начало) и даем 120 секунд
+                await page.goto(url, wait_until="commit", timeout=120000)
                 
-                # Даем время скриптам
-                await asyncio.sleep(10)
+                # Даем 15 секунд, чтобы текст просто "выпал" в код
+                await asyncio.sleep(15)
 
-                # Собираем данные
+                # Проверяем заголовок
                 title = await page.title()
-                
-                # Пытаемся найти цену
+                print(f"Браузер говорит, что открыл: {title}")
+
                 price = "N/A"
+                # Пробуем вытянуть цену самым простым способом
                 price_el = await page.query_selector('.adPage__content__price-feature')
                 if price_el:
                     price = await price_el.inner_text()
 
-                # Если цена N/A, попробуем другой селектор
-                if price == "N/A":
-                    price_el = await page.query_selector('[itemprop="price"]')
-                    if price_el:
-                        price = await price_el.get_attribute("content")
-
                 result = {
                     "url": url,
-                    "title": title,
-                    "price": price.strip() if price else "N/A",
+                    "title": title.strip() if title else "Пусто",
+                    "price": price.strip() if price else "N/A"
                 }
 
-                # Если мы хоть что-то нашли (заголовок не пустой)
-                if title:
-                    await Actor.push_data(result)
-                    print(f"Победа! Данные собраны: {result}")
-                else:
-                    await Actor.fail("Сайт открылся, но данных нет (пустая страница)")
+                await Actor.push_data(result)
+                print(f"Данные в базе: {result}")
 
             except Exception as e:
-                # Исправленный вызов ошибки
-                error_msg = f"Ошибка: {str(e)}"
+                error_msg = f"Осада не удалась: {str(e)}"
                 print(error_msg)
-                await Actor.fail(error_msg)
+                # Безопасный выход без ошибки TypeError
+                await Actor.exit(exit_code=1, status_message=error_msg)
             
             finally:
                 await browser.close()
